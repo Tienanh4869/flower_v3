@@ -127,21 +127,18 @@ with st.sidebar:
         # Chế độ Hai giai đoạn Lai (Hybrid)
         task_mode = "hybrid"
         model_key = "yolo26n_flower_only"
-        st.markdown("👉 **Stage 1 (Detection)**: Mặc định `yolo26n_flower_only` *(chuyên nhận diện hoa - chỉ có 1 model)*")
+        st.markdown("👉 **Stage 1 (Detection)**: Mặc định `yolo26n_flower_only` *(chuyên nhận diện hoa)*")
         cls_size_choice = st.selectbox(
             "Chọn Model Classification (Stage 2):",
             options=["yolo26s_cls", "yolo26n_cls"],
             index=0
         )
         cls_model_key = cls_size_choice
-        crop_padding_pct = st.slider("Viền Crop Padding (%):", 0, 20, 5, 1)
-        crop_padding = crop_padding_pct / 100.0
-        st.info(f"👉 **Pipeline**: `{model_key}` ➔ Crop (`+{crop_padding_pct}%`) ➔ `{cls_model_key}`")
+        st.info(f"👉 **Pipeline**: `{model_key}` ➔ Crop ➔ `{cls_model_key}`")
 
     elif "Classification" in task_choice:
         task_mode = "cls"
         cls_model_key = "yolo26s_cls"
-        crop_padding = 0.05
         size_choice = st.selectbox(
             "Chọn Model Classification:",
             options=["yolo26n_cls", "yolo26s_cls"],
@@ -154,7 +151,6 @@ with st.sidebar:
         # Chế độ Nhận diện 1 Pass (Detection)
         task_mode = "detect"
         cls_model_key = "yolo26s_cls"
-        crop_padding = 0.05
         size_choice = st.selectbox(
             "Chọn Model Detection:",
             options=["yolo26n", "yolo26s"],
@@ -163,11 +159,25 @@ with st.sidebar:
         model_key = f"{size_choice}_detect"
         st.info(f"👉 **Model Detection**: `{model_key}.pt`")
 
-    conf_threshold = st.slider("Độ tin cậy tối thiểu (Conf Threshold):", 0.10, 0.95, 0.40, 0.05)
-    iou_threshold = st.slider("Độ chồng lấp Bounding Box (IoU Threshold):", 0.10, 0.90, 0.45, 0.05)
+    st.markdown("#### 🎛️ Tham số Kỹ thuật")
+    
+    # Crop padding chỉ áp dụng ở chế độ Hybrid
+    is_not_hybrid = (task_mode != "hybrid")
+    crop_padding_pct = st.slider("Độ mở rộng viền cắt (Crop Padding %):", 0, 30, 10, 1, disabled=is_not_hybrid)
+    crop_padding = crop_padding_pct / 100.0 if not is_not_hybrid else 0.05
+    if is_not_hybrid:
+        st.caption("🔒 *Crop Padding bị khóa vì chỉ áp dụng cho chế độ Hai giai đoạn Lai.*")
+
+    # Bounding box params (conf, iou, min_area) không áp dụng ở chế độ Classification
+    is_cls = (task_mode == "cls")
+    conf_threshold = st.slider("Độ tin cậy tối thiểu (Conf Threshold):", 0.10, 0.95, 0.40, 0.05, disabled=is_cls)
+    iou_threshold = st.slider("Độ chồng lấp Bounding Box (IoU Threshold):", 0.10, 0.90, 0.45, 0.05, disabled=is_cls)
+    min_box_area_pct = st.slider("Diện tích Bounding Box tối thiểu (%):", 0.0, 10.0, 0.0, 0.1, disabled=is_cls)
+    min_box_area = min_box_area_pct if not is_cls else 0.0
+    if is_cls:
+        st.caption("🔒 *Các tham số Bounding Box (Conf, IoU, Min Area) bị khóa ở chế độ Phân loại toàn ảnh.*")
+
     imgsz = st.slider("Kích thước đầu vào (Image Size - imgsz):", min_value=32, max_value=1280, value=640, step=32)
-    min_box_area_pct = st.slider("Diện tích Bounding Box tối thiểu (%):", 0.0, 10.0, 0.0, 0.1)
-    min_box_area = min_box_area_pct
 
     st.markdown("---")
     st.caption("Flower — YOLO 26 + SQL Server")
