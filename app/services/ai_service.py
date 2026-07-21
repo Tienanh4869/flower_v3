@@ -66,8 +66,8 @@ class FlowerAIService:
             "fps": fps
         }
 
-        # 2. Xử lý ảnh kết quả có vẽ sẵn Bounding Box / Nhãn phân loại
-        res_plotted = result.plot()  # numpy array (BGR)
+        # 2. Xử lý ảnh kết quả có vẽ sẵn Bounding Box / Nhãn phân loại với viền dày rõ nét
+        res_plotted = result.plot(line_width=3)  # numpy array (BGR)
         res_rgb = cv2.cvtColor(res_plotted, cv2.COLOR_BGR2RGB)
         plotted_image = Image.fromarray(res_rgb)
 
@@ -247,15 +247,15 @@ class FlowerAIService:
                     "top3": top3_list
                 })
 
-                # Vẽ khung và nhãn loài lên ảnh tổng hợp kèm cả Det và Cls confidence
+                # Vẽ khung và nhãn loài lên ảnh tổng hợp viền dày chữ to rõ nét
                 name_vi = db_info["name_vi"] if db_info else folder_name
                 label = f"{name_vi} | Det:{conf_det*100:.0f}% Cls:{conf_cls*100:.0f}%"
                 x1_i, y1_i, x2_i, y2_i = map(int, [x1, y1, x2, y2])
                 color = (140, 117, 255)
-                cv2.rectangle(img_np, (x1_i, y1_i), (x2_i, y2_i), color, 2)
-                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
-                cv2.rectangle(img_np, (x1_i, y1_i - th - 8), (x1_i + tw + 4, y1_i), color, -1)
-                cv2.putText(img_np, label, (x1_i + 2, y1_i - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+                cv2.rectangle(img_np, (x1_i, y1_i), (x2_i, y2_i), color, 3)
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.75, 2)
+                cv2.rectangle(img_np, (x1_i, y1_i - th - 10), (x1_i + tw + 6, y1_i), color, -1)
+                cv2.putText(img_np, label, (x1_i + 3, y1_i - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2, cv2.LINE_AA)
 
         tot_inf_ms = round(det_inf_ms + cls_inf_total, 2)
         tot_ms = round(prep_ms + tot_inf_ms + post_ms, 2)
@@ -355,7 +355,7 @@ class FlowerAIService:
                     results = model(frame, conf=conf_threshold, imgsz=imgsz, verbose=False)
 
                 res = results[0]
-                plotted = res.plot()
+                plotted = res.plot(line_width=3)
 
                 if task == "detect" and res.boxes is not None:
                     img_area = float(frame.shape[0] * frame.shape[1])
@@ -476,7 +476,7 @@ class FlowerAIService:
                         results = model(frame, conf=conf_threshold, imgsz=imgsz, verbose=False)
 
                     res = results[0]
-                    last_plotted = res.plot()
+                    last_plotted = res.plot(line_width=3)
                     speed_dict = getattr(res, "speed", {})
                     prep = round(float(speed_dict.get("preprocess", 0.0)), 2)
                     inf = round(float(speed_dict.get("inference", 0.0)), 2)
@@ -618,7 +618,7 @@ class FlowerAIService:
                             results = model(frame, conf=conf_threshold, imgsz=imgsz, verbose=False)
 
                         res = results[0]
-                        last_plotted = res.plot()
+                        last_plotted = res.plot(line_width=3)
                         speed_dict = getattr(res, "speed", {})
                         prep = round(float(speed_dict.get("preprocess", 0.0)), 2)
                         inf = round(float(speed_dict.get("inference", 0.0)), 2)
