@@ -516,63 +516,63 @@ class FlowerAIService:
                 break
             frame_count += 1
 
-            if frame_count == 1 or frame_count % skip_frames == 0:
-                if task_mode == "hybrid":
-                    pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                    hybrid_res = self.predict_hybrid(
-                        pil_frame,
-                        det_model_key=model_key,
-                        cls_model_key=cls_model_key,
-                        conf_threshold=conf_threshold,
-                        iou_threshold=iou_threshold,
-                        crop_padding=crop_padding,
-                        imgsz=imgsz,
-                        min_box_area=min_box_area
-                    )
-                    if "error" in hybrid_res:
-                        last_plotted = frame
-                    else:
-                        last_plotted = cv2.cvtColor(np.array(hybrid_res["plotted_image"]), cv2.COLOR_RGB2BGR)
-                        last_speed = hybrid_res.get("speed_metrics", {})
-                        for item in hybrid_res.get("detected_items", []):
-                            fname = item["folder_name"]
-                            summary_counts[fname] = summary_counts.get(fname, 0) + 1
+            if frame_count != 1 and frame_count % skip_frames != 0:
+                continue
+
+            if task_mode == "hybrid":
+                pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                hybrid_res = self.predict_hybrid(
+                    pil_frame,
+                    det_model_key=model_key,
+                    cls_model_key=cls_model_key,
+                    conf_threshold=conf_threshold,
+                    iou_threshold=iou_threshold,
+                    crop_padding=crop_padding,
+                    imgsz=imgsz,
+                    min_box_area=min_box_area
+                )
+                if "error" in hybrid_res:
+                    last_plotted = frame
                 else:
-                    if task == "detect":
-                        results = model(frame, conf=conf_threshold, iou=iou_threshold, imgsz=imgsz, verbose=False)
-                    else:
-                        results = model(frame, conf=conf_threshold, imgsz=imgsz, verbose=False)
+                    last_plotted = cv2.cvtColor(np.array(hybrid_res["plotted_image"]), cv2.COLOR_RGB2BGR)
+                    last_speed = hybrid_res.get("speed_metrics", {})
+                    for item in hybrid_res.get("detected_items", []):
+                        fname = item["folder_name"]
+                        summary_counts[fname] = summary_counts.get(fname, 0) + 1
+            else:
+                if task == "detect":
+                    results = model(frame, conf=conf_threshold, iou=iou_threshold, imgsz=imgsz, verbose=False)
+                else:
+                    results = model(frame, conf=conf_threshold, imgsz=imgsz, verbose=False)
 
-                    res = results[0]
-                    last_plotted = res.plot(line_width=3)
-                    speed_dict = getattr(res, "speed", {})
-                    prep = round(float(speed_dict.get("preprocess", 0.0)), 2)
-                    inf = round(float(speed_dict.get("inference", 0.0)), 2)
-                    post = round(float(speed_dict.get("postprocess", 0.0)), 2)
-                    tot = round(prep + inf + post, 2)
-                    last_speed = {
-                        "preprocess": prep,
-                        "inference": inf,
-                        "postprocess": post,
-                        "total": tot,
-                        "fps": round(1000.0 / tot, 1) if tot > 0 else 0.0
-                    }
+                res = results[0]
+                last_plotted = res.plot(line_width=3)
+                speed_dict = getattr(res, "speed", {})
+                prep = round(float(speed_dict.get("preprocess", 0.0)), 2)
+                inf = round(float(speed_dict.get("inference", 0.0)), 2)
+                post = round(float(speed_dict.get("postprocess", 0.0)), 2)
+                tot = round(prep + inf + post, 2)
+                last_speed = {
+                    "preprocess": prep,
+                    "inference": inf,
+                    "postprocess": post,
+                    "total": tot,
+                    "fps": round(1000.0 / tot, 1) if tot > 0 else 0.0
+                }
 
-                    if task == "detect" and res.boxes is not None:
-                        img_area = float(frame.shape[0] * frame.shape[1])
-                        for box in res.boxes:
-                            x1, y1, x2, y2 = box.xyxy[0].tolist()
-                            if ((x2 - x1) * (y2 - y1) / img_area) * 100.0 < min_box_area:
-                                continue
-                            cls_id = int(box.cls[0].item())
-                            name = model.names[cls_id]
-                            summary_counts[name] = summary_counts.get(name, 0) + 1
-                    elif task == "cls" and res.probs is not None:
-                        top1_id = int(res.probs.top1)
-                        name = model.names[top1_id]
+                if task == "detect" and res.boxes is not None:
+                    img_area = float(frame.shape[0] * frame.shape[1])
+                    for box in res.boxes:
+                        x1, y1, x2, y2 = box.xyxy[0].tolist()
+                        if ((x2 - x1) * (y2 - y1) / img_area) * 100.0 < min_box_area:
+                            continue
+                        cls_id = int(box.cls[0].item())
+                        name = model.names[cls_id]
                         summary_counts[name] = summary_counts.get(name, 0) + 1
-            elif last_plotted is None:
-                last_plotted = frame
+                elif task == "cls" and res.probs is not None:
+                    top1_id = int(res.probs.top1)
+                    name = model.names[top1_id]
+                    summary_counts[name] = summary_counts.get(name, 0) + 1
 
             active_cnt = 0
             if task_mode == "hybrid" and "hybrid_res" in locals() and isinstance(hybrid_res, dict):
@@ -583,8 +583,8 @@ class FlowerAIService:
                 elif task == "cls" and getattr(res, "probs", None) is not None:
                     active_cnt = 1
 
-            hud_frame = draw_hud_overlay(last_plotted.copy(), frame_count, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), cap.get(cv2.CAP_PROP_FPS), last_speed, active_cnt)
-            _, buffer = cv2.imencode('.jpg', hud_frame, [cv2.IMWRITE_JPEG_QUALITY, 82])
+            hud_frame = draw_hud_overlay(last_plotted.copy() if last_plotted is not None else frame, frame_count, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), cap.get(cv2.CAP_PROP_FPS), last_speed, active_cnt)
+            _, buffer = cv2.imencode('.jpg', hud_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
@@ -668,63 +668,63 @@ class FlowerAIService:
                     break
                 frame_count += 1
 
-                if frame_count == 1 or frame_count % skip_frames == 0:
-                    if task_mode == "hybrid":
-                        pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                        hybrid_res = self.predict_hybrid(
-                            pil_frame,
-                            det_model_key=model_key,
-                            cls_model_key=cls_model_key,
-                            conf_threshold=conf_threshold,
-                            iou_threshold=iou_threshold,
-                            crop_padding=crop_padding,
-                            imgsz=imgsz,
-                            min_box_area=min_box_area
-                        )
-                        if "error" in hybrid_res:
-                            last_plotted = frame
-                        else:
-                            last_plotted = cv2.cvtColor(np.array(hybrid_res["plotted_image"]), cv2.COLOR_RGB2BGR)
-                            last_speed = hybrid_res.get("speed_metrics", {})
-                            for item in hybrid_res.get("detected_items", []):
-                                fname = item["folder_name"]
-                                summary_counts[fname] = summary_counts.get(fname, 0) + 1
+                if frame_count != 1 and frame_count % skip_frames != 0:
+                    continue
+
+                if task_mode == "hybrid":
+                    pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                    hybrid_res = self.predict_hybrid(
+                        pil_frame,
+                        det_model_key=model_key,
+                        cls_model_key=cls_model_key,
+                        conf_threshold=conf_threshold,
+                        iou_threshold=iou_threshold,
+                        crop_padding=crop_padding,
+                        imgsz=imgsz,
+                        min_box_area=min_box_area
+                    )
+                    if "error" in hybrid_res:
+                        last_plotted = frame
                     else:
-                        if task == "detect":
-                            results = model(frame, conf=conf_threshold, iou=iou_threshold, imgsz=imgsz, verbose=False)
-                        else:
-                            results = model(frame, conf=conf_threshold, imgsz=imgsz, verbose=False)
+                        last_plotted = cv2.cvtColor(np.array(hybrid_res["plotted_image"]), cv2.COLOR_RGB2BGR)
+                        last_speed = hybrid_res.get("speed_metrics", {})
+                        for item in hybrid_res.get("detected_items", []):
+                            fname = item["folder_name"]
+                            summary_counts[fname] = summary_counts.get(fname, 0) + 1
+                else:
+                    if task == "detect":
+                        results = model(frame, conf=conf_threshold, iou=iou_threshold, imgsz=imgsz, verbose=False)
+                    else:
+                        results = model(frame, conf=conf_threshold, imgsz=imgsz, verbose=False)
 
-                        res = results[0]
-                        last_plotted = res.plot(line_width=3)
-                        speed_dict = getattr(res, "speed", {})
-                        prep = round(float(speed_dict.get("preprocess", 0.0)), 2)
-                        inf = round(float(speed_dict.get("inference", 0.0)), 2)
-                        post = round(float(speed_dict.get("postprocess", 0.0)), 2)
-                        tot = round(prep + inf + post, 2)
-                        last_speed = {
-                            "preprocess": prep,
-                            "inference": inf,
-                            "postprocess": post,
-                            "total": tot,
-                            "fps": round(1000.0 / tot, 1) if tot > 0 else 0.0
-                        }
+                    res = results[0]
+                    last_plotted = res.plot(line_width=3)
+                    speed_dict = getattr(res, "speed", {})
+                    prep = round(float(speed_dict.get("preprocess", 0.0)), 2)
+                    inf = round(float(speed_dict.get("inference", 0.0)), 2)
+                    post = round(float(speed_dict.get("postprocess", 0.0)), 2)
+                    tot = round(prep + inf + post, 2)
+                    last_speed = {
+                        "preprocess": prep,
+                        "inference": inf,
+                        "postprocess": post,
+                        "total": tot,
+                        "fps": round(1000.0 / tot, 1) if tot > 0 else 0.0
+                    }
 
-                        if task == "detect" and res.boxes is not None:
-                            img_area = float(frame.shape[0] * frame.shape[1])
-                            for box in res.boxes:
-                                x1, y1, x2, y2 = box.xyxy[0].tolist()
-                                if ((x2 - x1) * (y2 - y1) / img_area) * 100.0 < min_box_area:
-                                    continue
-                                cls_id = int(box.cls[0].item())
-                                name = model.names[cls_id]
-                                summary_counts[name] = summary_counts.get(name, 0) + 1
-                        elif task == "cls" and res.probs is not None:
-                            top1_id = int(res.probs.top1)
-                            name = model.names[top1_id]
+                    if task == "detect" and res.boxes is not None:
+                        img_area = float(frame.shape[0] * frame.shape[1])
+                        for box in res.boxes:
+                            x1, y1, x2, y2 = box.xyxy[0].tolist()
+                            if ((x2 - x1) * (y2 - y1) / img_area) * 100.0 < min_box_area:
+                                continue
+                            cls_id = int(box.cls[0].item())
+                            name = model.names[cls_id]
                             summary_counts[name] = summary_counts.get(name, 0) + 1
-                elif last_plotted is None:
-                    last_plotted = frame
+                    elif task == "cls" and res.probs is not None:
+                        top1_id = int(res.probs.top1)
+                        name = model.names[top1_id]
+                        summary_counts[name] = summary_counts.get(name, 0) + 1
 
                 active_cnt = 0
                 if task_mode == "hybrid" and "hybrid_res" in locals() and isinstance(hybrid_res, dict):
@@ -735,8 +735,8 @@ class FlowerAIService:
                     elif task == "cls" and getattr(res, "probs", None) is not None:
                         active_cnt = 1
 
-                hud_frame = draw_hud_overlay(last_plotted.copy(), frame_count, 0, cap.get(cv2.CAP_PROP_FPS), last_speed, active_cnt)
-                _, buffer = cv2.imencode('.jpg', hud_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                hud_frame = draw_hud_overlay(last_plotted.copy() if last_plotted is not None else frame, frame_count, 0, cap.get(cv2.CAP_PROP_FPS), last_speed, active_cnt)
+                _, buffer = cv2.imencode('.jpg', hud_frame, [cv2.IMWRITE_JPEG_QUALITY, 78])
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
