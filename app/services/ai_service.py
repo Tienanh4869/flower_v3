@@ -11,6 +11,54 @@ from app.core.config import MODELS_CONFIG, MODEL_DETECT_PATH
 from app.services.db_service import get_flower_info_by_name
 
 
+def draw_hud_overlay(frame: np.ndarray, frame_count: int, total_frames: int, video_fps: float, speed_metrics: dict, active_count: int = 0) -> np.ndarray:
+    """Vẽ HUD Telemetry chuẩn khoa học lên góc trên bên trái của frame video/webcam."""
+    if frame is None or not isinstance(frame, np.ndarray):
+        return frame
+    h, w = frame.shape[:2]
+    video_fps = video_fps if video_fps > 0 else 25.0
+    sec = int(frame_count / video_fps)
+    ms = int(((frame_count / video_fps) - sec) * 100)
+    
+    if total_frames > 0:
+        line1 = f"Frame: #{frame_count}/{total_frames} | Time: {sec:02d}.{ms:02d}s"
+    else:
+        line1 = f"Live Frame: #{frame_count} | Time: {sec:02d}s"
+    
+    fps_val = speed_metrics.get("fps", 0.0)
+    lat_val = speed_metrics.get("total", 0.0)
+    line2 = f"Speed: {fps_val} FPS ({lat_val} ms)"
+    line3 = f"Active Detections: {active_count} flowers"
+    
+    scale = max(0.55, min(0.9, w / 1280.0))
+    thickness = max(1, int(scale * 2))
+    
+    lines = [line1, line2, line3]
+    max_tw = 0
+    for l in lines:
+        (tw, th), _ = cv2.getTextSize(l, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
+        if tw > max_tw:
+            max_tw = tw
+    
+    pad_x, pad_y = 15, 12
+    box_w = max_tw + pad_x * 2
+    line_spacing = int(24 * (scale / 0.6))
+    box_h = line_spacing * len(lines) + pad_y * 2
+    
+    # Nền tối viền xanh công nghệ
+    cv2.rectangle(frame, (10, 10), (10 + box_w, 10 + box_h), (25, 25, 35), -1)
+    cv2.rectangle(frame, (10, 10), (10 + box_w, 10 + box_h), (0, 220, 150), 2)
+    
+    # Vẽ từng dòng
+    y_curr = 10 + pad_y + int(18 * (scale / 0.6))
+    cv2.putText(frame, line1, (10 + pad_x, y_curr), cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 255, 255), thickness, cv2.LINE_AA)
+    y_curr += line_spacing
+    cv2.putText(frame, line2, (10 + pad_x, y_curr), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 255, 180), thickness, cv2.LINE_AA)
+    y_curr += line_spacing
+    cv2.putText(frame, line3, (10 + pad_x, y_curr), cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 190, 80), thickness, cv2.LINE_AA)
+    return frame
+
+
 class FlowerAIService:
     def __init__(self):
         self.loaded_models = {}
@@ -371,6 +419,26 @@ class FlowerAIService:
                     name = model.names[top1_id]
                     summary_counts[name] = summary_counts.get(name, 0) + 1
 
+            active_cnt = 0
+            speed_m = {}
+            if task_mode == "hybrid":
+                if "error" not in hybrid_res:
+                    active_cnt = len(hybrid_res.get("detected_items", []))
+                    speed_m = hybrid_res.get("speed_metrics", {})
+            else:
+                if task == "detect" and res.boxes is not None:
+                    active_cnt = len(res.boxes)
+                elif task == "cls" and res.probs is not None:
+                    active_cnt = 1
+                speed_dict = getattr(res, "speed", {})
+                prep = round(float(speed_dict.get("preprocess", 0.0)), 2)
+                inf = round(float(speed_dict.get("inference", 0.0)), 2)
+                post = round(float(speed_dict.get("postprocess", 0.0)), 2)
+                tot = round(prep + inf + post, 2)
+                speed_m = {"fps": round(1000.0 / tot, 1) if tot > 0 else 0.0, "total": tot}
+
+            plotted = draw_hud_overlay(plotted, frame_count, total_frames, fps, speed_m, active_cnt)
+
             if use_imageio:
                 rgb_plotted = cv2.cvtColor(plotted, cv2.COLOR_BGR2RGB)
                 writer.append_data(rgb_plotted)
@@ -506,7 +574,17 @@ class FlowerAIService:
             elif last_plotted is None:
                 last_plotted = frame
 
-            _, buffer = cv2.imencode('.jpg', last_plotted, [cv2.IMWRITE_JPEG_QUALITY, 82])
+            active_cnt = 0
+            if task_mode == "hybrid" and "hybrid_res" in locals() and isinstance(hybrid_res, dict):
+                active_cnt = len(hybrid_res.get("detected_items", []))
+            elif task_mode != "hybrid" and "res" in locals():
+                if task == "detect" and getattr(res, "boxes", None) is not None:
+                    active_cnt = len(res.boxes)
+                elif task == "cls" and getattr(res, "probs", None) is not None:
+                    active_cnt = 1
+
+            hud_frame = draw_hud_overlay(last_plotted.copy(), frame_count, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), cap.get(cv2.CAP_PROP_FPS), last_speed, active_cnt)
+            _, buffer = cv2.imencode('.jpg', hud_frame, [cv2.IMWRITE_JPEG_QUALITY, 82])
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
@@ -648,7 +726,17 @@ class FlowerAIService:
                 elif last_plotted is None:
                     last_plotted = frame
 
-                _, buffer = cv2.imencode('.jpg', last_plotted, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                active_cnt = 0
+                if task_mode == "hybrid" and "hybrid_res" in locals() and isinstance(hybrid_res, dict):
+                    active_cnt = len(hybrid_res.get("detected_items", []))
+                elif task_mode != "hybrid" and "res" in locals():
+                    if task == "detect" and getattr(res, "boxes", None) is not None:
+                        active_cnt = len(res.boxes)
+                    elif task == "cls" and getattr(res, "probs", None) is not None:
+                        active_cnt = 1
+
+                hud_frame = draw_hud_overlay(last_plotted.copy(), frame_count, 0, cap.get(cv2.CAP_PROP_FPS), last_speed, active_cnt)
+                _, buffer = cv2.imencode('.jpg', hud_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
