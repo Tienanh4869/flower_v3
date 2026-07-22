@@ -241,7 +241,13 @@ class FlowerAIService:
         crops_list = []
 
         if boxes is not None and len(boxes) > 0:
-            for box in boxes:
+            # Sort boxes by detection confidence descending and cap max crops to keep CPU video inference super fast
+            sorted_boxes = sorted(boxes, key=lambda b: float(b.conf[0].item()), reverse=True)
+            max_crops = 20 if generate_base64 else 6
+
+            for box in sorted_boxes:
+                if len(crops_list) >= max_crops:
+                    break
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 box_w = x2 - x1
                 box_h = y2 - y1
@@ -360,7 +366,8 @@ class FlowerAIService:
         cls_model_key: str = "yolo26s_cls",
         crop_padding: float = 0.05,
         imgsz: int = 640,
-        min_box_area: float = 0.0
+        min_box_area: float = 0.0,
+        skip_frames: int = 1
     ):
         """
         Dự đoán video frame-by-frame, ghi video kết quả và tổng hợp thống kê
@@ -395,6 +402,9 @@ class FlowerAIService:
 
         summary_counts = {}
         frame_count = 0
+        last_plotted = None
+        active_cnt = 0
+        speed_m = {}
 
         while True:
             ret, frame = cap.read()
@@ -402,66 +412,77 @@ class FlowerAIService:
                 break
             frame_count += 1
 
-            if task_mode == "hybrid":
-                hybrid_res = self.predict_hybrid(
-                    frame,
-                    det_model_key=model_key,
-                    cls_model_key=cls_model_key,
-                    conf_threshold=conf_threshold,
-                    iou_threshold=iou_threshold,
-                    crop_padding=crop_padding,
-                    imgsz=imgsz,
-                    min_box_area=min_box_area,
-                    generate_base64=False
-                )
-                if "error" in hybrid_res:
+            if frame_count != 1 and frame_count % skip_frames != 0:
+                if last_plotted is not None:
+                    plotted = last_plotted.copy()
+                else:
                     plotted = frame
-                else:
-                    p_img = hybrid_res["plotted_image"]
-                    plotted = p_img if isinstance(p_img, np.ndarray) else cv2.cvtColor(np.array(p_img), cv2.COLOR_RGB2BGR)
-                    for item in hybrid_res.get("detected_items", []):
-                        fname = item["folder_name"]
-                        summary_counts[fname] = summary_counts.get(fname, 0) + 1
             else:
-                if task == "detect":
-                    results = model(frame, conf=conf_threshold, iou=iou_threshold, imgsz=imgsz, verbose=False)
+                if task_mode == "hybrid":
+                    hybrid_res = self.predict_hybrid(
+                        frame,
+                        det_model_key=model_key,
+                        cls_model_key=cls_model_key,
+                        conf_threshold=conf_threshold,
+                        iou_threshold=iou_threshold,
+                        crop_padding=crop_padding,
+                        imgsz=imgsz,
+                        min_box_area=min_box_area,
+                        generate_base64=False
+                    )
+                    if "error" in hybrid_res:
+                        plotted = frame
+                    else:
+                        p_img = hybrid_res["plotted_image"]
+                        plotted = p_img if isinstance(p_img, np.ndarray) else cv2.cvtColor(np.array(p_img), cv2.COLOR_RGB2BGR)
+                        for item in hybrid_res.get("detected_items", []):
+                            fname = item["folder_name"]
+                            summary_counts[fname] = summary_counts.get(fname, 0) + 1
                 else:
-                    results = model(frame, conf=conf_threshold, imgsz=imgsz, verbose=False)
+                    if task == "detect":
+                        results = model(frame, conf=conf_threshold, iou=iou_threshold, imgsz=imgsz, verbose=False)
+                    else:
+                        results = model(frame, conf=conf_threshold, imgsz=imgsz, verbose=False)
 
-                res = results[0]
-                plotted = res.plot(line_width=3)
+                    res = results[0]
+                    plotted = res.plot(line_width=3)
 
-                if task == "detect" and res.boxes is not None:
-                    img_area = float(frame.shape[0] * frame.shape[1])
-                    for box in res.boxes:
-                        x1, y1, x2, y2 = box.xyxy[0].tolist()
-                        if ((x2 - x1) * (y2 - y1) / img_area) * 100.0 < min_box_area:
-                            continue
-                        cls_id = int(box.cls[0].item())
-                        name = model.names[cls_id]
+                    if task == "detect" and res.boxes is not None:
+                        img_area = float(frame.shape[0] * frame.shape[1])
+                        for box in res.boxes:
+                            x1, y1, x2, y2 = box.xyxy[0].tolist()
+                            if ((x2 - x1) * (y2 - y1) / img_area) * 100.0 < min_box_area:
+                                continue
+                            cls_id = int(box.cls[0].item())
+                            name = model.names[cls_id]
+                            summary_counts[name] = summary_counts.get(name, 0) + 1
+                    elif task == "cls" and res.probs is not None:
+                        top1_id = int(res.probs.top1)
+                        name = model.names[top1_id]
                         summary_counts[name] = summary_counts.get(name, 0) + 1
-                elif task == "cls" and res.probs is not None:
-                    top1_id = int(res.probs.top1)
-                    name = model.names[top1_id]
-                    summary_counts[name] = summary_counts.get(name, 0) + 1
 
-            active_cnt = 0
-            speed_m = {}
-            if task_mode == "hybrid":
-                if "error" not in hybrid_res:
-                    active_cnt = len(hybrid_res.get("detected_items", []))
-                    speed_m = hybrid_res.get("speed_metrics", {})
-            else:
-                if task == "detect" and res.boxes is not None:
-                    active_cnt = len(res.boxes)
-                elif task == "cls" and res.probs is not None:
-                    active_cnt = 1
-                speed_dict = getattr(res, "speed", {})
-                prep = round(float(speed_dict.get("preprocess", 0.0)), 2)
-                inf = round(float(speed_dict.get("inference", 0.0)), 2)
-                post = round(float(speed_dict.get("postprocess", 0.0)), 2)
-                tot = round(prep + inf + post, 2)
-                speed_m = {"fps": round(1000.0 / tot, 1) if tot > 0 else 0.0, "total": tot}
+                if task_mode == "hybrid":
+                    if "error" not in hybrid_res:
+                        active_cnt = len(hybrid_res.get("detected_items", []))
+                        speed_m = hybrid_res.get("speed_metrics", {})
+                else:
+                    if task == "detect" and res.boxes is not None:
+                        active_cnt = len(res.boxes)
+                    elif task == "cls" and res.probs is not None:
+                        active_cnt = 1
+                    speed_dict = getattr(res, "speed", {})
+                    prep = round(float(speed_dict.get("preprocess", 0.0)), 2)
+                    inf = round(float(speed_dict.get("inference", 0.0)), 2)
+                    post = round(float(speed_dict.get("postprocess", 0.0)), 2)
+                    tot = round(prep + inf + post, 2)
+                    speed_m = {
+                        "preprocess": prep,
+                        "inference": inf,
+                        "postprocess": post,
+                        "total": tot,
+                        "fps": round(1000.0 / tot, 1) if tot > 0 else 0.0
+                    }
+                last_plotted = plotted.copy()
 
             plotted = draw_hud_overlay(plotted, frame_count, total_frames, fps, speed_m, active_cnt)
 

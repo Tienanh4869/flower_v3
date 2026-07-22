@@ -108,9 +108,10 @@ async def detect_video(
     cls_model_key: str = Form("yolo26s_cls"),
     crop_padding: float = Form(0.05),
     imgsz: int = Form(640),
-    min_box_area: float = Form(0.0)
+    min_box_area: float = Form(0.0),
+    skip_frames: int = Form(1)
 ):
-    print(f"\n================= BẮT ĐẦU SUY LUẬN VIDEO ({model_key} | {task_mode}) ==================")
+    print(f"\n================= BẮT ĐẦU SUY LUẬN VIDEO ({model_key} | {task_mode} | skip={skip_frames}) ==================")
     temp_in_path = None
     temp_out_path = None
     try:
@@ -132,7 +133,8 @@ async def detect_video(
             cls_model_key=cls_model_key,
             crop_padding=crop_padding,
             imgsz=imgsz,
-            min_box_area=min_box_area
+            min_box_area=min_box_area,
+            skip_frames=skip_frames
         )
 
         if "error" in output:
