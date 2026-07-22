@@ -5,6 +5,7 @@ import base64
 import cv2
 import numpy as np
 import imageio
+from typing import Union
 from PIL import Image
 from ultralytics import YOLO
 from app.core.config import MODELS_CONFIG, MODEL_DETECT_PATH
@@ -196,7 +197,7 @@ class FlowerAIService:
 
     def predict_hybrid(
         self,
-        pil_image: Image.Image,
+        image_input: Union[Image.Image, np.ndarray],
         det_model_key: str = "yolo26n_flower_only",
         cls_model_key: str = "yolo26s_cls",
         conf_threshold: float = 0.4,
@@ -208,6 +209,7 @@ class FlowerAIService:
     ):
         """
         Two-Stage Hybrid: Stage 1 Detect hoa -> Stage 2 Crop + Classify từng bông -> Trả về Gallery Base64 & Top-3
+        Tối ưu hóa: nhận numpy array trực tiếp và chạy Batched Inference cho Stage 2 để đạt tốc độ realtime trên video.
         """
         det_model, det_cfg = self.get_or_load_model(det_model_key)
         cls_model, cls_cfg = self.get_or_load_model(cls_model_key)
@@ -217,7 +219,7 @@ class FlowerAIService:
         if cls_model is None:
             return {"error": f"Model Classification chưa được tải! Không tìm thấy file: {cls_cfg['path']}"}
 
-        det_results = det_model(pil_image, conf=conf_threshold, iou=iou_threshold, imgsz=imgsz, verbose=False)
+        det_results = det_model(image_input, conf=conf_threshold, iou=iou_threshold, imgsz=imgsz, verbose=False)
         boxes = det_results[0].boxes
 
         speed_dict = getattr(det_results[0], "speed", {})
@@ -227,8 +229,16 @@ class FlowerAIService:
         cls_inf_total = 0.0
 
         detected_items = []
-        img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-        img_area = float(pil_image.width * pil_image.height)
+        if isinstance(image_input, np.ndarray):
+            img_np = image_input.copy()
+            img_h, img_w = image_input.shape[:2]
+        else:
+            img_np = cv2.cvtColor(np.array(image_input), cv2.COLOR_RGB2BGR)
+            img_w, img_h = image_input.width, image_input.height
+        img_area = float(img_w * img_h)
+
+        box_meta = []
+        crops_list = []
 
         if boxes is not None and len(boxes) > 0:
             for box in boxes:
@@ -241,35 +251,47 @@ class FlowerAIService:
 
                 conf_det = round(float(box.conf[0].item()), 4)
 
-                # Mở rộng bounding box theo tỷ lệ crop_padding
                 pad_w = box_w * crop_padding
                 pad_h = box_h * crop_padding
                 x1_p = max(0, int(x1 - pad_w))
                 y1_p = max(0, int(y1 - pad_h))
-                x2_p = min(pil_image.width, int(x2 + pad_w))
-                y2_p = min(pil_image.height, int(y2 + pad_h))
+                x2_p = min(img_w, int(x2 + pad_w))
+                y2_p = min(img_h, int(y2 + pad_h))
 
-                # Cắt ảnh bông hoa
-                cropped_pil = pil_image.crop((x1_p, y1_p, x2_p, y2_p))
+                if isinstance(image_input, Image.Image):
+                    crop_item = image_input.crop((x1_p, y1_p, x2_p, y2_p))
+                else:
+                    crop_item = img_np[y1_p:y2_p, x1_p:x2_p]
+                    if crop_item.size == 0:
+                        continue
 
-                # Chuyển đổi sang chuỗi base64 cho Frontend hiển thị Gallery (chỉ khi cần cho ảnh tĩnh Tab 1)
-                crop_base64 = ""
-                if generate_base64:
-                    buf = io.BytesIO()
-                    cropped_pil.save(buf, format="JPEG")
-                    crop_base64 = f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
+                box_meta.append((x1, y1, x2, y2, conf_det, box_area_pct, crop_item))
+                crops_list.append(crop_item)
 
-                # Phân loại bông hoa đã crop bằng cls_model (sử dụng độ phân giải chuẩn 224x224 tối ưu tốc độ gấp 10 lần)
-                cls_imgsz = min(imgsz, 224)
-                cls_results = cls_model(cropped_pil, imgsz=cls_imgsz, verbose=False)[0]
+        if len(crops_list) > 0:
+            cls_imgsz = min(imgsz, 224)
+            cls_results_list = cls_model(crops_list, imgsz=cls_imgsz, verbose=False)
+            if not isinstance(cls_results_list, list):
+                cls_results_list = [cls_results_list]
+
+            for (x1, y1, x2, y2, conf_det, box_area_pct, cropped_pil_or_np), cls_results in zip(box_meta, cls_results_list):
                 cls_inf_total += float(getattr(cls_results, "speed", {}).get("inference", 0.0))
-
                 probs = cls_results.probs
                 top1_id = int(probs.top1)
                 conf_cls = round(float(probs.top1conf), 4)
                 folder_name = cls_model.names[top1_id]
 
                 db_info = get_flower_info_by_name(folder_name)
+
+                crop_base64 = ""
+                if generate_base64:
+                    if isinstance(cropped_pil_or_np, np.ndarray):
+                        cropped_pil = Image.fromarray(cv2.cvtColor(cropped_pil_or_np, cv2.COLOR_BGR2RGB))
+                    else:
+                        cropped_pil = cropped_pil_or_np
+                    buf = io.BytesIO()
+                    cropped_pil.save(buf, format="JPEG")
+                    crop_base64 = f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
 
                 top3_list = []
                 if generate_base64 and probs.top5 is not None:
@@ -299,7 +321,6 @@ class FlowerAIService:
                     "top3": top3_list
                 })
 
-                # Vẽ khung và nhãn loài lên ảnh tổng hợp viền dày chữ to rõ nét
                 name_vi = db_info["name_vi"] if db_info else folder_name
                 label = f"{name_vi} | Det:{conf_det*100:.0f}% Cls:{conf_cls*100:.0f}%"
                 x1_i, y1_i, x2_i, y2_i = map(int, [x1, y1, x2, y2])
@@ -320,10 +341,10 @@ class FlowerAIService:
             "fps": fps
         }
 
-        plotted_image = Image.fromarray(cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB))
+        plotted_output = img_np if not generate_base64 else Image.fromarray(cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB))
         return {
             "task": "hybrid",
-            "plotted_image": plotted_image,
+            "plotted_image": plotted_output,
             "detected_items": detected_items,
             "speed_metrics": speed_metrics
         }
@@ -382,9 +403,8 @@ class FlowerAIService:
             frame_count += 1
 
             if task_mode == "hybrid":
-                pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
                 hybrid_res = self.predict_hybrid(
-                    pil_frame,
+                    frame,
                     det_model_key=model_key,
                     cls_model_key=cls_model_key,
                     conf_threshold=conf_threshold,
@@ -397,7 +417,8 @@ class FlowerAIService:
                 if "error" in hybrid_res:
                     plotted = frame
                 else:
-                    plotted = cv2.cvtColor(np.array(hybrid_res["plotted_image"]), cv2.COLOR_RGB2BGR)
+                    p_img = hybrid_res["plotted_image"]
+                    plotted = p_img if isinstance(p_img, np.ndarray) else cv2.cvtColor(np.array(p_img), cv2.COLOR_RGB2BGR)
                     for item in hybrid_res.get("detected_items", []):
                         fname = item["folder_name"]
                         summary_counts[fname] = summary_counts.get(fname, 0) + 1
@@ -525,9 +546,8 @@ class FlowerAIService:
                 continue
 
             if task_mode == "hybrid":
-                pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
                 hybrid_res = self.predict_hybrid(
-                    pil_frame,
+                    frame,
                     det_model_key=model_key,
                     cls_model_key=cls_model_key,
                     conf_threshold=conf_threshold,
@@ -540,7 +560,8 @@ class FlowerAIService:
                 if "error" in hybrid_res:
                     last_plotted = frame
                 else:
-                    last_plotted = cv2.cvtColor(np.array(hybrid_res["plotted_image"]), cv2.COLOR_RGB2BGR)
+                    p_img = hybrid_res["plotted_image"]
+                    last_plotted = p_img if isinstance(p_img, np.ndarray) else cv2.cvtColor(np.array(p_img), cv2.COLOR_RGB2BGR)
                     last_speed = hybrid_res.get("speed_metrics", {})
                     for item in hybrid_res.get("detected_items", []):
                         fname = item["folder_name"]
@@ -678,9 +699,8 @@ class FlowerAIService:
                     continue
 
                 if task_mode == "hybrid":
-                    pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
                     hybrid_res = self.predict_hybrid(
-                        pil_frame,
+                        frame,
                         det_model_key=model_key,
                         cls_model_key=cls_model_key,
                         conf_threshold=conf_threshold,
@@ -693,7 +713,8 @@ class FlowerAIService:
                     if "error" in hybrid_res:
                         last_plotted = frame
                     else:
-                        last_plotted = cv2.cvtColor(np.array(hybrid_res["plotted_image"]), cv2.COLOR_RGB2BGR)
+                        p_img = hybrid_res["plotted_image"]
+                        last_plotted = p_img if isinstance(p_img, np.ndarray) else cv2.cvtColor(np.array(p_img), cv2.COLOR_RGB2BGR)
                         last_speed = hybrid_res.get("speed_metrics", {})
                         for item in hybrid_res.get("detected_items", []):
                             fname = item["folder_name"]
