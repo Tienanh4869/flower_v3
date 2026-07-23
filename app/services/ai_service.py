@@ -60,9 +60,12 @@ def draw_hud_overlay(frame: np.ndarray, frame_count: int, total_frames: int, vid
     return frame
 
 
+from collections import OrderedDict
+
 class FlowerAIService:
     def __init__(self):
-        self.loaded_models = {}
+        self.loaded_models = OrderedDict()
+        self.MAX_MODELS_IN_RAM = 2
         # Pre-load default model
         self.get_or_load_model("yolo26n_detect")
 
@@ -71,15 +74,28 @@ class FlowerAIService:
             model_key = "yolo26n_detect"
         
         cfg = MODELS_CONFIG[model_key]
-        path = cfg["path"]
+        base_path = cfg["path"]
         
-        if model_key not in self.loaded_models:
-            if os.path.exists(path):
-                self.loaded_models[model_key] = YOLO(path)
-                print(f"✅ [MODEL CACHE] Đã tải thành công model vào RAM: {model_key} ({path})")
+        # Hỗ trợ tự động nhận diện file .onnx nếu bạn đã export và bỏ vào thư mục weights
+        onnx_path = base_path.replace('.pt', '.onnx')
+        target_path = onnx_path if os.path.exists(onnx_path) else base_path
+        
+        if model_key in self.loaded_models:
+            # Di chuyển model vừa dùng lên cuối để đánh dấu là "Mới được dùng gần nhất" (LRU)
+            self.loaded_models.move_to_end(model_key)
+        else:
+            if os.path.exists(target_path):
+                # Nếu bộ nhớ đã đầy (>= MAX_MODELS), xóa model cũ nhất (ở đầu dict)
+                if len(self.loaded_models) >= self.MAX_MODELS_IN_RAM:
+                    oldest_key, _ = self.loaded_models.popitem(last=False)
+                    print(f"🧹 [MEMORY CACHE] Đã giải phóng model cũ khỏi RAM để dọn chỗ: {oldest_key}")
+                
+                self.loaded_models[model_key] = YOLO(target_path)
+                print(f"✅ [MODEL CACHE] Đã tải thành công model vào RAM: {model_key} ({target_path})")
             else:
-                print(f"⚠️ [MODEL CACHE] Không tìm thấy file model tại: {path}")
+                print(f"⚠️ [MODEL CACHE] Không tìm thấy file model tại: {base_path} hoặc {onnx_path}")
                 return None, cfg
+                
         return self.loaded_models.get(model_key), cfg
 
     def predict_and_get_info(self, pil_image: Image.Image, model_key: str = "yolo26n_detect", conf_threshold: float = 0.4, iou_threshold: float = 0.45, imgsz: int = 640, min_box_area: float = 0.0):
