@@ -90,8 +90,10 @@ class FlowerAIService:
                     oldest_key, _ = self.loaded_models.popitem(last=False)
                     print(f"🧹 [MEMORY CACHE] Đã giải phóng model cũ khỏi RAM để dọn chỗ: {oldest_key}")
                 
-                self.loaded_models[model_key] = YOLO(target_path)
-                print(f"✅ [MODEL CACHE] Đã tải thành công model vào RAM: {model_key} ({target_path})")
+                # SỬA LỖI Ở ĐÂY: Xác định rõ task thay vì để mặc định là detect
+                yolo_task = "classify" if cfg.get("task") == "cls" else "detect"
+                self.loaded_models[model_key] = YOLO(target_path, task=yolo_task)
+                print(f"✅ [MODEL CACHE] Đã tải thành công model vào RAM: {model_key} ({target_path}) [Task: {yolo_task}]")
             else:
                 print(f"⚠️ [MODEL CACHE] Không tìm thấy file model tại: {base_path} hoặc {onnx_path}")
                 return None, cfg
@@ -580,72 +582,72 @@ class FlowerAIService:
             frame_count += 1
 
             if frame_count != 1 and frame_count % skip_frames != 0:
-                continue
-
-            if task_mode == "hybrid":
-                hybrid_res = self.predict_hybrid(
-                    frame,
-                    det_model_key=model_key,
-                    cls_model_key=cls_model_key,
-                    conf_threshold=conf_threshold,
-                    iou_threshold=iou_threshold,
-                    crop_padding=crop_padding,
-                    imgsz=imgsz,
-                    min_box_area=min_box_area,
-                    generate_base64=False
-                )
-                if "error" in hybrid_res:
-                    last_plotted = frame
-                else:
-                    p_img = hybrid_res["plotted_image"]
-                    last_plotted = p_img if isinstance(p_img, np.ndarray) else cv2.cvtColor(np.array(p_img), cv2.COLOR_RGB2BGR)
-                    last_speed = hybrid_res.get("speed_metrics", {})
-                    for item in hybrid_res.get("detected_items", []):
-                        fname = item["folder_name"]
-                        summary_counts[fname] = summary_counts.get(fname, 0) + 1
+                pass
             else:
-                if task == "detect":
-                    results = model(frame, conf=conf_threshold, iou=iou_threshold, imgsz=imgsz, verbose=False)
+                if task_mode == "hybrid":
+                    hybrid_res = self.predict_hybrid(
+                        frame,
+                        det_model_key=model_key,
+                        cls_model_key=cls_model_key,
+                        conf_threshold=conf_threshold,
+                        iou_threshold=iou_threshold,
+                        crop_padding=crop_padding,
+                        imgsz=imgsz,
+                        min_box_area=min_box_area,
+                        generate_base64=False
+                    )
+                    if "error" in hybrid_res:
+                        last_plotted = frame
+                    else:
+                        p_img = hybrid_res["plotted_image"]
+                        last_plotted = p_img if isinstance(p_img, np.ndarray) else cv2.cvtColor(np.array(p_img), cv2.COLOR_RGB2BGR)
+                        last_speed = hybrid_res.get("speed_metrics", {})
+                        for item in hybrid_res.get("detected_items", []):
+                            fname = item["folder_name"]
+                            summary_counts[fname] = summary_counts.get(fname, 0) + 1
                 else:
-                    results = model(frame, conf=conf_threshold, imgsz=imgsz, verbose=False)
+                    if task == "detect":
+                        results = model(frame, conf=conf_threshold, iou=iou_threshold, imgsz=imgsz, verbose=False)
+                    else:
+                        results = model(frame, conf=conf_threshold, imgsz=imgsz, verbose=False)
 
-                res = results[0]
-                last_plotted = res.plot(line_width=3)
-                speed_dict = getattr(res, "speed", {})
-                prep = round(float(speed_dict.get("preprocess", 0.0)), 2)
-                inf = round(float(speed_dict.get("inference", 0.0)), 2)
-                post = round(float(speed_dict.get("postprocess", 0.0)), 2)
-                tot = round(prep + inf + post, 2)
-                last_speed = {
-                    "preprocess": prep,
-                    "inference": inf,
-                    "postprocess": post,
-                    "total": tot,
-                    "fps": round(1000.0 / tot, 1) if tot > 0 else 0.0
-                }
+                    res = results[0]
+                    last_plotted = res.plot(line_width=3)
+                    speed_dict = getattr(res, "speed", {})
+                    prep = round(float(speed_dict.get("preprocess", 0.0)), 2)
+                    inf = round(float(speed_dict.get("inference", 0.0)), 2)
+                    post = round(float(speed_dict.get("postprocess", 0.0)), 2)
+                    tot = round(prep + inf + post, 2)
+                    last_speed = {
+                        "preprocess": prep,
+                        "inference": inf,
+                        "postprocess": post,
+                        "total": tot,
+                        "fps": round(1000.0 / tot, 1) if tot > 0 else 0.0
+                    }
 
-                if task == "detect" and res.boxes is not None:
-                    img_area = float(frame.shape[0] * frame.shape[1])
-                    for box in res.boxes:
-                        x1, y1, x2, y2 = box.xyxy[0].tolist()
-                        if ((x2 - x1) * (y2 - y1) / img_area) * 100.0 < min_box_area:
-                            continue
-                        cls_id = int(box.cls[0].item())
-                        name = model.names[cls_id]
+                    if task == "detect" and res.boxes is not None:
+                        img_area = float(frame.shape[0] * frame.shape[1])
+                        for box in res.boxes:
+                            x1, y1, x2, y2 = box.xyxy[0].tolist()
+                            if ((x2 - x1) * (y2 - y1) / img_area) * 100.0 < min_box_area:
+                                continue
+                            cls_id = int(box.cls[0].item())
+                            name = model.names[cls_id]
+                            summary_counts[name] = summary_counts.get(name, 0) + 1
+                    elif task == "cls" and res.probs is not None:
+                        top1_id = int(res.probs.top1)
+                        name = model.names[top1_id]
                         summary_counts[name] = summary_counts.get(name, 0) + 1
-                elif task == "cls" and res.probs is not None:
-                    top1_id = int(res.probs.top1)
-                    name = model.names[top1_id]
-                    summary_counts[name] = summary_counts.get(name, 0) + 1
 
-            active_cnt = 0
-            if task_mode == "hybrid" and "hybrid_res" in locals() and isinstance(hybrid_res, dict):
-                active_cnt = len(hybrid_res.get("detected_items", []))
-            elif task_mode != "hybrid" and "res" in locals():
-                if task == "detect" and getattr(res, "boxes", None) is not None:
-                    active_cnt = len(res.boxes)
-                elif task == "cls" and getattr(res, "probs", None) is not None:
-                    active_cnt = 1
+                active_cnt = 0
+                if task_mode == "hybrid" and "hybrid_res" in locals() and isinstance(hybrid_res, dict):
+                    active_cnt = len(hybrid_res.get("detected_items", []))
+                elif task_mode != "hybrid" and "res" in locals():
+                    if task == "detect" and getattr(res, "boxes", None) is not None:
+                        active_cnt = len(res.boxes)
+                    elif task == "cls" and getattr(res, "probs", None) is not None:
+                        active_cnt = 1
 
             hud_frame = draw_hud_overlay(last_plotted.copy() if last_plotted is not None else frame, frame_count, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), cap.get(cv2.CAP_PROP_FPS), last_speed, active_cnt)
             _, buffer = cv2.imencode('.jpg', hud_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
